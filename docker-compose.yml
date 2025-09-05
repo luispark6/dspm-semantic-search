@@ -1,0 +1,33 @@
+services:
+  fastapi:
+    build: 
+      context: .
+      dockerfile: ./Dockerfile.backend
+    container_name: fastapi
+    volumes: 
+      - .:/code
+    ports: 
+      - 80:80
+    restart: on-failure:10"3
+
+  gradio:
+    build: 
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: gradio
+    volumes: 
+      - .:/code
+    ports: 
+      - 7860:7860
+    restart: on-failure:10"
+
+
+  chromaDB:
+    image: ghcr.io/chroma-core/chroma:latest
+    container_name: chromaDB
+    volumes:
+      - ./vectorDB:/data
+    ports:
+      - 8000:8000
+
+  
