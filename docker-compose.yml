@@ -10,6 +10,9 @@ services:
       - 80:80
     restart: on-failure:10"3
 
+    depends_on:
+      - postgres
+
   gradio:
     build: 
       context: .
@@ -22,12 +25,17 @@ services:
     restart: on-failure:10"
 
 
-  chromaDB:
-    image: ghcr.io/chroma-core/chroma:latest
-    container_name: chromaDB
-    volumes:
-      - ./vectorDB:/data
-    ports:
-      - 8000:8000
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg17-trixie
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
 
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      
+
+    ports: []
   
