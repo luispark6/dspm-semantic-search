@@ -1,6 +1,5 @@
 fastapi==0.115.13
-psycopg2-binary
 fastapi[standard]
-torch
 asyncpg
 openai
+sqlalchemy[asyncio]

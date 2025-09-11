@@ -1,0 +1,7 @@
+FROM pgvector/pgvector:0.8.1-pg17-trixie
+
+
+COPY init-pg-hba.sh /docker-entrypoint-initdb.d/init-pg-hba.sh
+
+RUN chown postgres:postgres /docker-entrypoint-initdb.d/init-pg-hba.sh \
+    && chmod +x /docker-entrypoint-initdb.d/init-pg-hba.sh

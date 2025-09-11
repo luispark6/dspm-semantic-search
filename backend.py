@@ -1,15 +1,17 @@
 from fastapi import FastAPI
-import uuid
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-import json
-import asyncpg
-from openai import AsyncOpenAI
-from typing import Optional, List
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
+from sqlalchemy import select, Index, text, and_
+from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP, TEXT, INTEGER
 from datetime import datetime
-from openai.types.chat import ChatCompletionToolParam
-from fastapi.responses import StreamingResponse
-
+from typing import Optional, List
+from openai import AsyncOpenAI
+import json
+import os
+import uuid
 
 
 dspm_tool = {
@@ -88,7 +90,60 @@ dspm_tool = {
     }
 }
 
-client = AsyncOpenAI(api_key="OPENAPI KEY")  
+
+
+OPENAPI_KEY = os.environ["OPENAPI_KEY"]
+client = AsyncOpenAI(api_key=OPENAPI_KEY)
+
+
+
+Base = declarative_base()
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    log_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
+    timestamp: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    system: Mapped[str] = mapped_column(TEXT, nullable=True)
+    severity: Mapped[str] = mapped_column(TEXT, nullable=True)
+    data_asset: Mapped[str] = mapped_column(TEXT, nullable=True)
+    data_classification: Mapped[str] = mapped_column(TEXT, nullable=True)
+    sensitivity_score: Mapped[int] = mapped_column(INTEGER, nullable=True)
+    location: Mapped[str] = mapped_column(TEXT, nullable=True)
+    event_type: Mapped[str] = mapped_column(TEXT, nullable=True)
+    action: Mapped[str] = mapped_column(TEXT, nullable=True)
+    status: Mapped[str] = mapped_column(TEXT, nullable=True)
+    user_email: Mapped[str] = mapped_column(TEXT, nullable=True)
+    role: Mapped[str] = mapped_column(TEXT, nullable=True)
+    source_ip: Mapped[str] = mapped_column(TEXT, nullable=True)
+    device: Mapped[str] = mapped_column(TEXT, nullable=True)
+    policy_triggered: Mapped[str] = mapped_column(TEXT, nullable=True)
+    risk_score: Mapped[int] = mapped_column(INTEGER, nullable=True)
+    threat_type: Mapped[str] = mapped_column(TEXT, nullable=True)
+    content: Mapped[str] = mapped_column(TEXT, nullable=False)
+    embedding: Mapped[str] = mapped_column(TEXT, nullable=False)  
+
+    __table_args__ = (
+        Index("documents_timestamp_idx", "timestamp"),
+        Index("documents_ip_idx", "source_ip"),
+
+    )
+
+POSTGRES_USER = os.environ["POSTGRES_USER"]
+POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
+engine = create_async_engine(
+    f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@postgres:5432/ragdb",
+    echo=True,
+    future=True,
+)
+
+# High Level ORM use
+async_session = sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
 
 
 def format_hybrid(log: dict) -> str:
@@ -101,7 +156,6 @@ def format_hybrid(log: dict) -> str:
         f"Policy triggered: {log['policy_triggered']}. "
         f"Risk score: {log['risk_score']}, Threat type: {log['threat_type']}."
     )
-
     structured_json = json.dumps(log, ensure_ascii=False)
     return f"{natural_text}\n[Structured: {structured_json}]"
 
@@ -115,122 +169,78 @@ async def get_embedding(text: str) -> list[float]:
     return response.data[0].embedding
 
 
-async def get_db_pool():
-    """Create async database connection pool"""
-    return await asyncpg.create_pool(
-        database="ragdb",
-        user="postgres",
-        password="postgres",
-        host="postgres",
-        port=5432,
-        min_size=5,
-        max_size=20,
-        command_timeout=60
-    )
+
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_pool
+    #dont use async session because low level creation
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        await conn.run_sync(Base.metadata.create_all)
+        # ##### Dummy Data ######
 
-    db_pool = await get_db_pool()
+        # Insert dummy data using a proper async session
+    async with AsyncSession(engine) as session:
+        with open("dspm_logs.json", "r") as f:
+            logs = json.load(f)
 
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id bigserial PRIMARY KEY,
-                log_id UUID,
-                timestamp TIMESTAMPTZ,
-                system TEXT,
-                severity TEXT,
-                data_asset TEXT,
-                data_classification TEXT,
-                sensitivity_score INT,
-                location TEXT,
-                event_type TEXT,
-                action TEXT,
-                status TEXT,
-                user_email TEXT,
-                role TEXT,
-                source_ip TEXT,
-                device TEXT,
-                policy_triggered TEXT,
-                risk_score INT,
-                threat_type TEXT,
-                content TEXT,
-                embedding vector(1536)
-            );
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS documents_embedding_hnsw_idx
-            ON documents
-            USING hnsw (embedding vector_cosine_ops);
-        """)
-
-        await conn.execute("CREATE INDEX IF NOT EXISTS documents_timestamp_idx ON documents (timestamp);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS documents_ip_idx ON documents (source_ip);")
-
-
-
-# ##### Dummy Data ######
-
-    # with open("dspm_logs.json", "r") as f:
-    #     logs = json.load(f)
-
-
-    # for log in logs:
-    #     content = format_hybrid(log)
-    #     embedding = await get_embedding(content)
-    #     async with db_pool.acquire() as conn:
-    #         await conn.execute(
-    #             """
-    #             INSERT INTO documents (
-    #                 log_id, timestamp, system, severity, data_asset, data_classification,
-    #                 sensitivity_score, location, event_type, action, status, user_email, role,
-    #                 source_ip, device, policy_triggered, risk_score, threat_type, content, embedding
-    #             )
-    #             VALUES (
-    #                 $1, $2::timestamptz, $3, $4, $5, $6,
-    #                 $7, $8, $9, $10, $11, $12, $13,
-    #                 $14, $15, $16, $17, $18, $19, $20::vector
-    #             )
-    #             """,
-    #             log["log_id"],
-    #             datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00")),
-    #             log["system"],
-    #             log["severity"],
-    #             log["data_asset"],
-    #             log["data_classification"],
-    #             log["sensitivity_score"],
-    #             log["location"],
-    #             log["event_type"],
-    #             log["action"],
-    #             log["status"],
-    #             log["user"],
-    #             log["role"],
-    #             log["source_ip"],
-    #             log["device"],
-    #             log["policy_triggered"],
-    #             log["risk_score"],
-    #             log["threat_type"],
-    #             content,
-    #             str(embedding)
-    #         )
+        for log in logs:
+            content = format_hybrid(log)
+            embedding = await get_embedding(content)
+            
+            # Use proper parameter binding with named parameters
+            await session.execute(
+                text("""
+                INSERT INTO documents (
+                    log_id, timestamp, system, severity, data_asset, data_classification,
+                    sensitivity_score, location, event_type, action, status, user_email, role,
+                    source_ip, device, policy_triggered, risk_score, threat_type, content, embedding
+                )
+                VALUES (
+                    :log_id, :timestamp, :system, :severity, :data_asset, :data_classification,
+                    :sensitivity_score, :location, :event_type, :action, :status, :user_email, :role,
+                    :source_ip, :device, :policy_triggered, :risk_score, :threat_type, :content, :embedding
+                )
+                """),
+                {
+                    "log_id": log["log_id"],
+                    "timestamp": datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00")),
+                    "system": log["system"],
+                    "severity": log["severity"],
+                    "data_asset": log["data_asset"],
+                    "data_classification": log["data_classification"],
+                    "sensitivity_score": log["sensitivity_score"],
+                    "location": log["location"],
+                    "event_type": log["event_type"],
+                    "action": log["action"],
+                    "status": log["status"],
+                    "user_email": log["user"],  # Assuming this maps to user_email
+                    "role": log["role"],
+                    "source_ip": log["source_ip"],
+                    "device": log["device"],
+                    "policy_triggered": log["policy_triggered"],
+                    "risk_score": log["risk_score"],
+                    "threat_type": log["threat_type"],
+                    "content": content,
+                    "embedding": str(embedding)  
+                }
+            )
+        
+        await session.commit()
 
 
 
-##### Dummy Data ######
 
 
+
+    
     yield
-    if db_pool:
-        await db_pool.close()
+    await engine.dispose()
 
 
 app = FastAPI(lifespan=lifespan)
+
 
 
 class DSPMLogEntry(BaseModel):
@@ -254,49 +264,39 @@ class DSPMLogEntry(BaseModel):
     threat_type: str
 
 
+
 @app.post("/add_logs")
 async def add_logs(log_data: DSPMLogEntry):
     log_dict = log_data.dict()
     content = format_hybrid(log_dict)
     embedding = await get_embedding(content)
 
+    new_doc = Document(
+        log_id=uuid.UUID(log_dict["log_id"]),
+        timestamp=datetime.fromisoformat(log_dict["timestamp"].replace("Z", "+00:00")),
+        system=log_dict["system"],
+        severity=log_dict["severity"],
+        data_asset=log_dict["data_asset"],
+        data_classification=log_dict["data_classification"],
+        sensitivity_score=log_dict["sensitivity_score"],
+        location=log_dict["location"],
+        event_type=log_dict["event_type"],
+        action=log_dict["action"],
+        status=log_dict["status"],
+        user_email=log_dict["user"],
+        role=log_dict["role"],
+        source_ip=log_dict["source_ip"],
+        device=log_dict["device"],
+        policy_triggered=log_dict["policy_triggered"],
+        risk_score=log_dict["risk_score"],
+        threat_type=log_dict["threat_type"],
+        content=content,
+        embedding=str(embedding),
+    )
 
-
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO documents (
-                log_id, timestamp, system, severity, data_asset, data_classification,
-                sensitivity_score, location, event_type, action, status, user_email, role,
-                source_ip, device, policy_triggered, risk_score, threat_type, content, embedding
-            )
-            VALUES (
-                $1, $2::timestamptz, $3, $4, $5, $6,
-                $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20::vector
-            )
-            """,
-            log_dict["log_id"],
-            datetime.fromisoformat(log_dict["timestamp"].replace("Z", "+00:00")),
-            log_dict["system"],
-            log_dict["severity"],
-            log_dict["data_asset"],
-            log_dict["data_classification"],
-            log_dict["sensitivity_score"],
-            log_dict["location"],
-            log_dict["event_type"],
-            log_dict["action"],
-            log_dict["status"],
-            log_dict["user"],
-            log_dict["role"],
-            log_dict["source_ip"],
-            log_dict["device"],
-            log_dict["policy_triggered"],
-            log_dict["risk_score"],
-            log_dict["threat_type"],
-            content,
-            str(embedding)
-        )
+    async with async_session() as session:
+        session.add(new_doc)
+        await session.commit()
 
     return {"Successfully added DSPM Log": log_dict["log_id"]}
 
@@ -305,7 +305,7 @@ async def add_logs(log_data: DSPMLogEntry):
 @app.get("/ask")
 async def ask(query: str, limit: int = 100, rag: bool=False):
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",  
+        model="gpt-4.1",  
         messages=[
             {
                 "role": "system", 
@@ -333,7 +333,6 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
     parsed = json.loads(tool_call.function.arguments)
 
 
-    print(parsed)
     return await pg_query(
         query=query,
         limit=limit,
@@ -351,151 +350,68 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
 
 async def pg_query(
     query: str,
-    limit: int = 100, 
-    start: Optional[str] = None,       
+    limit: int = 100,
+    start: Optional[str] = None,
     end: Optional[str] = None,
-    source_ip_list: Optional[List[str]] = None, 
+    source_ip_list: Optional[List[str]] = None,
     user_email_list: Optional[List[str]] = None,
     event_type_list: Optional[List[str]] = None,
     threat_type_list: Optional[List[str]] = None,
-    severity_list:  Optional[List[str]] = None,
-    rag: bool=False
+    severity_list: Optional[List[str]] = None,
+    rag: bool = False,
 ):
-    #2025-09-08T02:06:48.800843+00:00
-
-    query_embedding = await get_embedding(query)
     filters = []
-    params = [limit]
-    idx = 2
-    if source_ip_list:
-        if len(source_ip_list) == 1:
-            filters.append(f"source_ip = ${idx}")
-            params.append(source_ip_list[0])
-            idx += 1
-        else:
-            placeholders = ", ".join([f"${idx + i}" for i in range(len(source_ip_list))])
-            filters.append(f"source_ip IN ({placeholders})")
-            params.extend(source_ip_list)
-            idx += len(source_ip_list)
+
+    if source_ip_list: #source_ip in list of ips
+        filters.append(Document.source_ip.in_(source_ip_list))
     if user_email_list:
-        if len(user_email_list) == 1:
-            filters.append(f"user_email = ${idx}")
-            params.append(user_email_list[0])
-            idx += 1
-        else:
-            placeholders = ", ".join([f"${idx + i}" for i in range(len(user_email_list))])
-            filters.append(f"user_email IN ({placeholders})")
-            params.extend(user_email_list)
-            idx += len(user_email_list)
-
+        filters.append(Document.user_email.in_(user_email_list))
     if event_type_list:
-        if len(event_type_list)==1:
-            filters.append(f"event_type = ${idx}")
-            params.append(event_type_list[0])
-            idx += 1
-        else:
-            placeholders = ", ".join([f"${idx + i}" for i in range(len(event_type_list))])
-            filters.append(f"event_type IN ({placeholders})")
-            params.extend(event_type_list)
-            idx += len(event_type_list)
+        filters.append(Document.event_type.in_(event_type_list))
     if threat_type_list:
-        if len(threat_type_list)==1:
-            filters.append(f"threat_type = ${idx}")
-            params.append(threat_type_list[0])
-            idx += 1
-        else:
-            placeholders = ", ".join([f"${idx + i}" for i in range(len(threat_type_list))])
-            filters.append(f"threat_type IN ({placeholders})")
-            params.extend(threat_type_list)
-            idx += len(threat_type_list)
+        filters.append(Document.threat_type.in_(threat_type_list))
     if severity_list:
-        if len(severity_list)==1:
-            filters.append(f"severity = ${idx}")
-            params.append(severity_list[0])
-            idx += 1
-        else:
-            placeholders = ", ".join([f"${idx + i}" for i in range(len(severity_list))])
-            filters.append(f"severity IN ({placeholders})")
-            params.extend(severity_list)
-            idx += len(severity_list)
-
+        filters.append(Document.severity.in_(severity_list))
 
     if start and end:
-        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-        filters.append(f"timestamp BETWEEN ${idx}::timestamptz AND ${idx+1}::timestamptz")
-        params.extend([start_dt, end_dt])
-        idx += 2
+        filters.append(Document.timestamp.between(
+            datetime.fromisoformat(start.replace("Z", "+00:00")),
+            datetime.fromisoformat(end.replace("Z", "+00:00"))
+        ))
     elif start:
-        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        filters.append(f"timestamp >= ${idx}::timestamptz")
-        params.append(start_dt)
-        idx += 1
+        filters.append(Document.timestamp >= datetime.fromisoformat(start.replace("Z", "+00:00")))
     elif end:
-        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-        filters.append(f"timestamp <= ${idx}::timestamptz")
-        params.append(end_dt)
-        idx += 1
+        filters.append(Document.timestamp <= datetime.fromisoformat(end.replace("Z", "+00:00")))
 
+    #* parses to individual args
+    stmt = (
+        select(Document)
+        .where(and_(*filters)) if filters else select(Document)
+    )
+    stmt = stmt.order_by(Document.timestamp.desc()).limit(limit)
 
-    where_clause = " AND ".join(filters)
-    if where_clause:
-        where_clause = "WHERE " + where_clause
-    sql = f"""
-        SELECT id, log_id, content
-        FROM documents
-        {where_clause}
-        ORDER BY timestamp DESC
-        LIMIT $1;
-    """
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(sql, *params)
+    async with async_session() as session:
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
 
     if not rag:
-        return [r for r in rows]
+        return [row.__dict__ for row in rows]
 
-
-
-
-    # sql = f"""
-    #     SELECT id, log_id, content, embedding <-> $1::vector AS distance
-    #     FROM documents
-    #     {where_clause}
-    #     ORDER BY embedding <-> $1::vector
-    #     LIMIT $2;
-    # """
-
-
+    # Build RAG prompt
     prompt = f"""
-**Task**: Analyze the provided DSPM log entries and respond to the user's query based strictly on observable data patterns and factual log content.
-Do not make any assumptions that may mislead the user. Use the observable data to suggest answers to the user's query.
-**Analysis Approach**: Evidence-based analysis using only the provided log data
+**Task**: Analyze the provided DSPM log entries and respond to the user's query.
+Avoid speculation and cite specific logs.
 
-**Instructions:**
-1. Extract factual information directly from the log entries
-3. Identify observable, quantifiable(if possible) patterns in the data
-4. Construct an answer to the user based of the observed data
-5. Cite specific log entries at the end of the response
-6. Avoid speculation beyond what the data directly demonstrates
-
-**DSPM Log Entries for Analysis ({len(rows)} total):**
+**DSPM Log Entries ({len(rows)} total):**
 """
-
     for i, row in enumerate(rows, 1):
-        prompt += f"\n-------\n{str(row)}\n"
+        prompt += f"\n-------\n{row.content}\n"
 
-    prompt += f"""
-
-    **User Query:**
-    {query}
-
-    Please provide a response that addresses the query directly without speculation and cites relevant log evidence at the end.
-    """
-    print(prompt)
+    prompt += f"\n**User Query:** {query}\n"
 
     async def event_generator():
         stream = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],
             stream=True,
         )
@@ -504,10 +420,3 @@ Do not make any assumptions that may mislead the user. Use the observable data t
                 yield event.choices[0].delta.content
 
     return StreamingResponse(event_generator(), media_type="text/plain")
-
-        
-
-
-
-    #53.39.183.237
-    #206.159.153.98
