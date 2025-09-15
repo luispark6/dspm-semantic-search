@@ -13,10 +13,25 @@ import json
 import os
 import uuid
 import io
-
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg')  
 import matplotlib.pyplot as plt
+
+OPENAPI_KEY = os.environ["OPENAPI_KEY"]
+client = AsyncOpenAI(api_key=OPENAPI_KEY)
+POSTGRES_USER = os.environ["POSTGRES_USER"]
+POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
+engine = create_async_engine(
+    f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@postgres:5432/ragdb",
+    echo=True,
+    future=True,
+)
+
+async_session = sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
 
 dspm_tool = {
     "type": "function",
@@ -102,15 +117,7 @@ dspm_tool = {
     }
 }
 
-
-
-OPENAPI_KEY = os.environ["OPENAPI_KEY"]
-client = AsyncOpenAI(api_key=OPENAPI_KEY)
-
-
-
 Base = declarative_base()
-
 class Document(Base):
     __tablename__ = "documents"
 
@@ -142,51 +149,26 @@ class Document(Base):
 
     )
 
-POSTGRES_USER = os.environ["POSTGRES_USER"]
-POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
-engine = create_async_engine(
-    f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@postgres:5432/ragdb",
-    echo=True,
-    future=True,
-)
 
-# High Level ORM use
-async_session = sessionmaker(
-    bind=engine,
-    expire_on_commit=False,
-    class_=AsyncSession,
-)
-
-
-def format_hybrid(log: dict) -> str:
-    """Format DSPM log entry into hybrid format for embeddings."""
-    natural_text = (
-        f"On {log['timestamp']}, system {log['system']} detected a {log['severity']} "
-        f"event involving data asset {log['data_asset']} classified as {log['data_classification']}. "
-        f"The action '{log['action']}' by user_email {log['user']} (role {log['role']}) "
-        f"from IP {log['source_ip']} on device {log['device']} was {log['status']}. "
-        f"Policy triggered: {log['policy_triggered']}. "
-        f"Risk score: {log['risk_score']}, Threat type: {log['threat_type']}."
-    )
-    structured_json = json.dumps(log, ensure_ascii=False)
-    return f"{natural_text}\n[Structured: {structured_json}]"
-
-
-async def get_embedding(text: str) -> list[float]:
-    """Generate embeddings using OpenAI API"""
-    response = await client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
-
-
-
-
-
-
-
-
+class DSPMLogEntry(BaseModel):
+    log_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: str
+    system: str
+    severity: str
+    data_asset: str
+    data_classification: str
+    sensitivity_score: int
+    location: str
+    event_type: str
+    action: str
+    status: str
+    user: str
+    role: str
+    source_ip: str
+    device: str
+    policy_triggered: str
+    risk_score: int
+    threat_type: str
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -246,10 +228,6 @@ async def lifespan(app: FastAPI):
     #     await session.commit()
 
 
-
-
-
-
     
     yield
     await engine.dispose()
@@ -257,6 +235,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+async def get_embedding(text: str) -> list[float]:
+    """Generate embeddings using OpenAI API"""
+    response = await client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+    
+
+def format_hybrid(log: dict) -> str:
+    """Format DSPM log entry into hybrid format for embeddings."""
+    natural_text = (
+        f"On {log['timestamp']}, system {log['system']} detected a {log['severity']} "
+        f"event involving data asset {log['data_asset']} classified as {log['data_classification']}. "
+        f"The action '{log['action']}' by user_email {log['user']} (role {log['role']}) "
+        f"from IP {log['source_ip']} on device {log['device']} was {log['status']}. "
+        f"Policy triggered: {log['policy_triggered']}. "
+        f"Risk score: {log['risk_score']}, Threat type: {log['threat_type']}."
+    )
+    structured_json = json.dumps(log, ensure_ascii=False)
+    return f"{natural_text}\n[Structured: {structured_json}]"
 
 def create_scatter_plot(scatter_json):
     plt.figure(figsize=(10, 6))
@@ -266,36 +265,23 @@ def create_scatter_plot(scatter_json):
     plt.title(scatter_json['title'])
     plt.xticks(rotation=45)
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100)
     buf.seek(0)
     plt.close()
     return buf
-
-
 
 def create_pie_chart(pie_json):
     plt.figure(figsize=(10, 6))
     plt.pie(pie_json['values'], labels=pie_json['labels'], autopct='%1.1f%%')
-    
     if 'title' in pie_json:
         plt.title(pie_json['title'])
-    
-    # Ensure the chart is properly laid out
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100)
     buf.seek(0)
     plt.close()
     return buf
-
-
-    
-
-
-
 
 def create_bar_graph(bar_json):
     plt.figure(figsize=(10, 6))
@@ -305,7 +291,6 @@ def create_bar_graph(bar_json):
     plt.title(bar_json['title'])
     plt.xticks(rotation=45)
     plt.tight_layout()
-    
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100)
     buf.seek(0)
@@ -313,37 +298,14 @@ def create_bar_graph(bar_json):
     return buf
     
 
-    
-
-
-
-class DSPMLogEntry(BaseModel):
-    log_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: str
-    system: str
-    severity: str
-    data_asset: str
-    data_classification: str
-    sensitivity_score: int
-    location: str
-    event_type: str
-    action: str
-    status: str
-    user: str
-    role: str
-    source_ip: str
-    device: str
-    policy_triggered: str
-    risk_score: int
-    threat_type: str
-
-
-
 @app.post("/add_logs")
 async def add_logs(log_data: DSPMLogEntry):
     log_dict = log_data.dict()
     content = format_hybrid(log_dict)
-    embedding = await get_embedding(content)
+    try:
+        embedding = await get_embedding(content)
+    except Exception as e:
+        return{"Error": f"Could not convert text to embeddings: {e}"}
 
     new_doc = Document(
         log_id=uuid.UUID(log_dict["log_id"]),
@@ -368,14 +330,14 @@ async def add_logs(log_data: DSPMLogEntry):
         embedding=str(embedding),
     )
 
-    async with async_session() as session:
-        session.add(new_doc)
-        await session.commit()
+    try:
+        async with async_session() as session:
+            session.add(new_doc)
+            await session.commit()
 
-    return {"Successfully added DSPM Log": log_dict["log_id"]}
-
-
-
+        return {"Successfully added DSPM Log": log_dict["log_id"]}
+    except Exception as e:
+        return {"Error": f"Could not add logs to pg: {e}"}
 
 @app.get("/ask")
 async def ask(query: str, limit: int = 100, rag: bool=False):
@@ -414,10 +376,6 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
     except Exception as e:
         return {"Error": "Arguments are not in valid json format: {e}"}
 
-        
-
-
-
     return await pg_query(
         query=query,
         limit=limit,
@@ -433,9 +391,6 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
     )
     
 
-
-
-
 async def pg_query(
     query: str,
     limit: int = 100,
@@ -450,8 +405,7 @@ async def pg_query(
     rag: bool = False,
 ):
     filters = []
-
-    if source_ip_list: #source_ip in list of ips
+    if source_ip_list: 
         filters.append(Document.source_ip.in_(source_ip_list))
     if user_email_list:
         filters.append(Document.user_email.in_(user_email_list))
@@ -471,25 +425,19 @@ async def pg_query(
         filters.append(Document.timestamp >= datetime.fromisoformat(start.replace("Z", "+00:00")))
     elif end:
         filters.append(Document.timestamp <= datetime.fromisoformat(end.replace("Z", "+00:00")))
-
-    #* parses to individual args
     stmt = (
         select(Document)
         .where(and_(*filters)) if filters else select(Document)
     )
     stmt = stmt.order_by(Document.timestamp.desc()).limit(limit)
-
     try:
         async with async_session() as session:
             result = await session.execute(stmt)
             rows = result.scalars().all()
     except Exception as e:
         return {"Error": "Failed to get pg queries: {e}"}
-
-
     if not rag:
         return [row.__dict__ for row in rows]
-
     if not graph_type:
         prompt = f"""
 **Task**: Analyze the provided DSPM log entries and respond to the user's query.
@@ -501,7 +449,6 @@ CRITICAL, avoid speculation and cite specific logs.
             prompt += f"\n-------\n{row.content}\n"
 
         prompt += f"\n**User Query:** {query}\n"
-
         async def event_generator(prompt: str):
             try:
                 stream = await client.chat.completions.create(
@@ -509,23 +456,15 @@ CRITICAL, avoid speculation and cite specific logs.
                     messages=[{"role": "user", "content": prompt}],
                     stream=True,
                 )
-
                 async for event in stream:
                     try:
                         if event.choices[0].delta.content is not None:
                             yield event.choices[0].delta.content
                     except Exception as e:
-                        # Handle unexpected issues in individual events
                         yield f"\n[Error parsing event: {str(e)}]\n"
-
             except Exception as e:
-                # Handle connection / API errors gracefully
                 yield f"\n[Streaming error: {str(e)}]\n"
-
-        
-
         return StreamingResponse(event_generator(), media_type="text/plain")
-
 
     if graph_type == "bar_graph":
         prompt ="""
@@ -545,12 +484,7 @@ CRITICAL, avoid speculation and cite specific logs.
     'y_name': 'Descriptive Y-Axis Label'
     'title': 'title of the graph'
 }
-
-
-
 """
-
-
         for i, row in enumerate(rows, 1):
             prompt += f"\n-------\n{row.content}\n"
         prompt += f"\n**User Query:** {query}\n"
@@ -582,8 +516,6 @@ CRITICAL, avoid speculation and cite specific logs.
                     "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 }
             )
-        except json.JSONDecodeError:
-                return {"error": "Failed to parse graph specification from AI"}
         except Exception as e:
             return {"error": f"Failed to create graph: {bar_json}"}
 
@@ -619,8 +551,6 @@ CRITICAL, avoid speculation and cite specific logs.
             )
         except Exception as e:
             return {"Error": "Failed to call model: {e}"}
-
-
         try:
             scatter_json = json.loads(response.choices[0].message.content)
             required_keys = ['x_values', 'x_name', 'y_values', 'y_name']
@@ -630,7 +560,6 @@ CRITICAL, avoid speculation and cite specific logs.
             if 'title' not in scatter_json:
                 scatter_json['title'] = f"DSPM Analysis: {query[:50]}..."
             image_buffer = create_scatter_plot(scatter_json)
-            # Return the image as a streaming response
             return StreamingResponse(
                 content=image_buffer,
                 media_type="image/png",
@@ -638,19 +567,10 @@ CRITICAL, avoid speculation and cite specific logs.
                     "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 }
             )
-        except json.JSONDecodeError:
-                return {"error": "Failed to parse graph specification from AI"}
         except Exception as e:
             return {"error": f"Failed to create graph: {str(e)}"}
 
-
-
-
-
-
-
     if graph_type == "pie_chart":
-
         prompt= """
 **Role:** You are a data parsing expert specializing in DSPM (Data Security Posture Management) log analysis.
 
@@ -670,7 +590,6 @@ CRITICAL, avoid speculation and cite specific logs.
         for i, row in enumerate(rows, 1):
             prompt += f"\n-------\n{row.content}\n"
         prompt += f"\n**User Query:** {query}\n"
-
         try:
             response = await client.chat.completions.create(
                 model="gpt-4.1",
@@ -679,8 +598,6 @@ CRITICAL, avoid speculation and cite specific logs.
             )
         except Exception as e:
             return {"Error": "Failed to call model: {e}"}
-
-
         try:
             pie_json = json.loads(response.choices[0].message.content)
             required_keys = ['values', 'labels', 'title']
@@ -698,15 +615,5 @@ CRITICAL, avoid speculation and cite specific logs.
                     "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 }
             )
-        except json.JSONDecodeError:
-                return {"error": "Failed to parse graph specification from AI"}
         except Exception as e:
             return {"error": f"Failed to create graph: {str(e)}"}
-
-
-
-
-
-
-
-
