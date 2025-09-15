@@ -3,3 +3,4 @@ fastapi[standard]
 asyncpg
 openai
 sqlalchemy[asyncio]
+matplotlib

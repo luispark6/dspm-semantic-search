@@ -12,7 +12,11 @@ from openai import AsyncOpenAI
 import json
 import os
 import uuid
+import io
 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
 
 dspm_tool = {
     "type": "function",
@@ -27,9 +31,9 @@ dspm_tool = {
         - Comparisons: "compare logs between IP X and Y"
         - Investigations: "investigate suspicious activity from IP X"
         
-        CRITICAL: If the user mentions ANY IP addresses, time ranges, users, or other DSPM log attributes 
-        in their request (regardless of whether they want a report, analysis, or simple query), 
-        this tool MUST be used to extract those parameters first.""",
+        CRITICAL: If the user mentions ANY IP addresses, time ranges, users, or other DSPM log attributes in their request (regardless of whether they want a report, analysis, or simple query), this tool MUST be used to extract those parameters first.
+        
+        """,
         "parameters": {
             "type": "object", 
             "properties": {
@@ -64,6 +68,14 @@ dspm_tool = {
                     "description": "Type of request: 'query' for simple data retrieval, 'report' for summary reports, 'analysis' for detailed analysis, 'comparison' for comparing data, 'investigation' for security investigations"
                 },
                 "system": {"type": "string"},
+
+                "graph_type": {
+                    "type": "string",
+                    "enum": ["scatter_plot", "bar_graph", "pie_chart"],
+                    "description": "If the user desires a graph of some sort, set graph_type to one of the following: [scatter_plot, bar_graph, pie_chart]"
+                },
+
+
                 "data_asset": {"type": "string"},
                 "data_classification": {"type": "string"},
                 "sensitivity_score": {"type": "integer"},
@@ -172,6 +184,10 @@ async def get_embedding(text: str) -> list[float]:
 
 
 
+
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #dont use async session because low level creation
@@ -181,53 +197,53 @@ async def lifespan(app: FastAPI):
         # ##### Dummy Data ######
 
         # Insert dummy data using a proper async session
-    async with AsyncSession(engine) as session:
-        with open("dspm_logs.json", "r") as f:
-            logs = json.load(f)
+    # async with AsyncSession(engine) as session:
+    #     with open("dspm_logs.json", "r") as f:
+    #         logs = json.load(f)
 
-        for log in logs:
-            content = format_hybrid(log)
-            embedding = await get_embedding(content)
+    #     for log in logs:
+    #         content = format_hybrid(log)
+    #         embedding = await get_embedding(content)
             
-            # Use proper parameter binding with named parameters
-            await session.execute(
-                text("""
-                INSERT INTO documents (
-                    log_id, timestamp, system, severity, data_asset, data_classification,
-                    sensitivity_score, location, event_type, action, status, user_email, role,
-                    source_ip, device, policy_triggered, risk_score, threat_type, content, embedding
-                )
-                VALUES (
-                    :log_id, :timestamp, :system, :severity, :data_asset, :data_classification,
-                    :sensitivity_score, :location, :event_type, :action, :status, :user_email, :role,
-                    :source_ip, :device, :policy_triggered, :risk_score, :threat_type, :content, :embedding
-                )
-                """),
-                {
-                    "log_id": log["log_id"],
-                    "timestamp": datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00")),
-                    "system": log["system"],
-                    "severity": log["severity"],
-                    "data_asset": log["data_asset"],
-                    "data_classification": log["data_classification"],
-                    "sensitivity_score": log["sensitivity_score"],
-                    "location": log["location"],
-                    "event_type": log["event_type"],
-                    "action": log["action"],
-                    "status": log["status"],
-                    "user_email": log["user"],  # Assuming this maps to user_email
-                    "role": log["role"],
-                    "source_ip": log["source_ip"],
-                    "device": log["device"],
-                    "policy_triggered": log["policy_triggered"],
-                    "risk_score": log["risk_score"],
-                    "threat_type": log["threat_type"],
-                    "content": content,
-                    "embedding": str(embedding)  
-                }
-            )
+    #         # Use proper parameter binding with named parameters
+    #         await session.execute(
+    #             text("""
+    #             INSERT INTO documents (
+    #                 log_id, timestamp, system, severity, data_asset, data_classification,
+    #                 sensitivity_score, location, event_type, action, status, user_email, role,
+    #                 source_ip, device, policy_triggered, risk_score, threat_type, content, embedding
+    #             )
+    #             VALUES (
+    #                 :log_id, :timestamp, :system, :severity, :data_asset, :data_classification,
+    #                 :sensitivity_score, :location, :event_type, :action, :status, :user_email, :role,
+    #                 :source_ip, :device, :policy_triggered, :risk_score, :threat_type, :content, :embedding
+    #             )
+    #             """),
+    #             {
+    #                 "log_id": log["log_id"],
+    #                 "timestamp": datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00")),
+    #                 "system": log["system"],
+    #                 "severity": log["severity"],
+    #                 "data_asset": log["data_asset"],
+    #                 "data_classification": log["data_classification"],
+    #                 "sensitivity_score": log["sensitivity_score"],
+    #                 "location": log["location"],
+    #                 "event_type": log["event_type"],
+    #                 "action": log["action"],
+    #                 "status": log["status"],
+    #                 "user_email": log["user"],  # Assuming this maps to user_email
+    #                 "role": log["role"],
+    #                 "source_ip": log["source_ip"],
+    #                 "device": log["device"],
+    #                 "policy_triggered": log["policy_triggered"],
+    #                 "risk_score": log["risk_score"],
+    #                 "threat_type": log["threat_type"],
+    #                 "content": content,
+    #                 "embedding": str(embedding)  
+    #             }
+    #         )
         
-        await session.commit()
+    #     await session.commit()
 
 
 
@@ -240,6 +256,64 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def create_scatter_plot(scatter_json):
+    plt.figure(figsize=(10, 6))
+    plt.scatter(scatter_json['x_values'], scatter_json['y_values'])
+    plt.xlabel(scatter_json['x_name'])
+    plt.ylabel(scatter_json['y_name'])
+    plt.title(scatter_json['title'])
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    return buf
+
+
+
+def create_pie_chart(pie_json):
+    plt.figure(figsize=(10, 6))
+    plt.pie(pie_json['values'], labels=pie_json['labels'], autopct='%1.1f%%')
+    
+    if 'title' in pie_json:
+        plt.title(pie_json['title'])
+    
+    # Ensure the chart is properly laid out
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    return buf
+
+
+    
+
+
+
+
+def create_bar_graph(bar_json):
+    plt.figure(figsize=(10, 6))
+    plt.bar(bar_json['x_values'], bar_json['y_values'])
+    plt.xlabel(bar_json['x_name'])
+    plt.ylabel(bar_json['y_name'])
+    plt.title(bar_json['title'])
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    return buf
+    
+
+    
 
 
 
@@ -302,35 +376,46 @@ async def add_logs(log_data: DSPMLogEntry):
 
 
 
+
 @app.get("/ask")
 async def ask(query: str, limit: int = 100, rag: bool=False):
-    response = await client.chat.completions.create(
-        model="gpt-4.1",  
-        messages=[
-            {
-                "role": "system", 
-                "content": """You are a DSPM log analysis assistant. For ANY request involving DSPM logs, 
-                you MUST first use the parse_dspm_query tool to extract relevant parameters, 
-                even if the user is asking for reports, analysis, or summaries. 
-                
-                The tool should be used for ALL these request types:
-                - "show me logs..." 
-                - "write a report about..."
-                - "analyze logs from..."
-                - "summarize activity for..."
-                - "investigate..." 
-                - "compare logs between..."
-                
-                Always use the tool first to get the data, then provide the appropriate response format."""
-            },
-            {"role": "user", "content": query}],
-        tools=[dspm_tool],
-        tool_choice="auto",
-    )
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4.1",  
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are a DSPM log analysis assistant. For ANY request involving DSPM logs, 
+                    you MUST first use the parse_dspm_query tool to extract relevant parameters, 
+                    even if the user is asking for reports, analysis, or summaries. 
+                    
+                    The tool should be used for ALL these request types:
+                    - "show me logs..." 
+                    - "write a report about..."
+                    - "analyze logs from..."
+                    - "summarize activity for..."
+                    - "investigate..." 
+                    - "compare logs between..."
+                    
+                    Always use the tool first to get the data, then provide the appropriate response format."""
+                },
+                {"role": "user", "content": query}],
+            tools=[dspm_tool],
+            tool_choice="auto",
+        )
+    except Exception as e:
+        return {"Error": "Failed to parse queries: {e}"}
+
     if not response.choices[0].message.tool_calls:
         return {"error": "No valid information for postgress query"}
     tool_call = response.choices[0].message.tool_calls[0]
-    parsed = json.loads(tool_call.function.arguments)
+    try:
+        parsed = json.loads(tool_call.function.arguments)
+    except Exception as e:
+        return {"Error": "Arguments are not in valid json format: {e}"}
+
+        
+
 
 
     return await pg_query(
@@ -338,6 +423,7 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
         limit=limit,
         start=parsed.get("start"),
         end=parsed.get("end"),
+        graph_type = parsed.get("graph_type"),
         source_ip_list=parsed.get("source_ip_list"),
         user_email_list=parsed.get("user_email_list"),
         event_type_list = parsed.get("event_type_list"),
@@ -345,6 +431,8 @@ async def ask(query: str, limit: int = 100, rag: bool=False):
         severity_list = parsed.get("severity_list"),
         rag=rag
     )
+    
+
 
 
 
@@ -353,6 +441,7 @@ async def pg_query(
     limit: int = 100,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    graph_type: Optional[str] = None,
     source_ip_list: Optional[List[str]] = None,
     user_email_list: Optional[List[str]] = None,
     event_type_list: Optional[List[str]] = None,
@@ -390,33 +479,234 @@ async def pg_query(
     )
     stmt = stmt.order_by(Document.timestamp.desc()).limit(limit)
 
-    async with async_session() as session:
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
+    try:
+        async with async_session() as session:
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+    except Exception as e:
+        return {"Error": "Failed to get pg queries: {e}"}
+
 
     if not rag:
         return [row.__dict__ for row in rows]
 
-    # Build RAG prompt
-    prompt = f"""
+    if not graph_type:
+        prompt = f"""
 **Task**: Analyze the provided DSPM log entries and respond to the user's query.
-Avoid speculation and cite specific logs.
+CRITICAL, avoid speculation and cite specific logs. 
 
 **DSPM Log Entries ({len(rows)} total):**
 """
-    for i, row in enumerate(rows, 1):
-        prompt += f"\n-------\n{row.content}\n"
+        for i, row in enumerate(rows, 1):
+            prompt += f"\n-------\n{row.content}\n"
 
-    prompt += f"\n**User Query:** {query}\n"
+        prompt += f"\n**User Query:** {query}\n"
 
-    async def event_generator():
-        stream = await client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-        )
-        async for event in stream:
-            if event.choices[0].delta.content is not None:
-                yield event.choices[0].delta.content
+        async def event_generator(prompt: str):
+            try:
+                stream = await client.chat.completions.create(
+                    model="gpt-4.1",
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=True,
+                )
 
-    return StreamingResponse(event_generator(), media_type="text/plain")
+                async for event in stream:
+                    try:
+                        if event.choices[0].delta.content is not None:
+                            yield event.choices[0].delta.content
+                    except Exception as e:
+                        # Handle unexpected issues in individual events
+                        yield f"\n[Error parsing event: {str(e)}]\n"
+
+            except Exception as e:
+                # Handle connection / API errors gracefully
+                yield f"\n[Streaming error: {str(e)}]\n"
+
+        
+
+        return StreamingResponse(event_generator(), media_type="text/plain")
+
+
+    if graph_type == "bar_graph":
+        prompt ="""
+**Role:** You are a data parsing expert specializing in DSPM (Data Security Posture Management) log analysis.
+
+**Task:** Extract specific data from provided DSPM log entries to construct a bar graph based on a user's request.
+
+**Input:**
+1.  `dspm_logs`: A list of DSPM log entries (JSON objects).
+2.  `user_prompt`: A natural language description of what to plot (e.g., "Show me failed logins by user" or "Graph data accesses per resource type").
+
+**Output Format:** Return **only** a valid JSON object in this exact structure:
+{
+    'x_values': ['CategoryA', 'CategoryB', 'CategoryC'],
+    'x_name': 'Descriptive X-Axis Label',
+    'y_values': [10, 15, 7],
+    'y_name': 'Descriptive Y-Axis Label'
+    'title': 'title of the graph'
+}
+
+
+
+"""
+
+
+        for i, row in enumerate(rows, 1):
+            prompt += f"\n-------\n{row.content}\n"
+        prompt += f"\n**User Query:** {query}\n"
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0 
+            )
+        except Exception as e:
+            return {"Error": "Failed to call model: {e}"}
+
+
+        try:
+            bar_json = json.loads(response.choices[0].message.content)
+            required_keys = ['x_values', 'x_name', 'y_values', 'y_name']
+            if not all(key in bar_json for key in required_keys):
+                raise ValueError("Invalid graph JSON structure")
+            
+            if 'title' not in bar_json:
+                bar_json['title'] = f"DSPM Analysis: {query[:50]}..."
+            image_buffer = create_bar_graph(bar_json)
+            # Return the image as a streaming response
+            return StreamingResponse(
+                content=image_buffer,
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                }
+            )
+        except json.JSONDecodeError:
+                return {"error": "Failed to parse graph specification from AI"}
+        except Exception as e:
+            return {"error": f"Failed to create graph: {bar_json}"}
+
+    if graph_type == "scatter_plot":
+
+        prompt= """
+**Role:** You are a data parsing expert specializing in DSPM (Data Security Posture Management) log analysis.
+
+**Task:** Extract specific data from provided DSPM log entries to construct a scatter plot based on a user's request.
+
+**Input:**
+1.  `dspm_logs`: A list of DSPM log entries (JSON objects).
+2.  `user_prompt`: A natural language description of what to plot (e.g., "Show me failed logins by user" or "Graph data accesses per resource type").
+
+**Output Format:** Return **only** a valid JSON object in this exact structure:
+{
+    'x_values': [9, 7, 3],
+    'x_name': 'Descriptive X-Axis Label',
+    'y_values': [10, 15, 7],
+    'y_name': 'Descriptive Y-Axis Label'
+    'title': 'title of the graph'
+}
+"""
+        for i, row in enumerate(rows, 1):
+            prompt += f"\n-------\n{row.content}\n"
+        prompt += f"\n**User Query:** {query}\n"
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0 
+            )
+        except Exception as e:
+            return {"Error": "Failed to call model: {e}"}
+
+
+        try:
+            scatter_json = json.loads(response.choices[0].message.content)
+            required_keys = ['x_values', 'x_name', 'y_values', 'y_name']
+            if not all(key in scatter_json for key in required_keys):
+                raise ValueError("Invalid graph JSON structure")
+            
+            if 'title' not in scatter_json:
+                scatter_json['title'] = f"DSPM Analysis: {query[:50]}..."
+            image_buffer = create_scatter_plot(scatter_json)
+            # Return the image as a streaming response
+            return StreamingResponse(
+                content=image_buffer,
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                }
+            )
+        except json.JSONDecodeError:
+                return {"error": "Failed to parse graph specification from AI"}
+        except Exception as e:
+            return {"error": f"Failed to create graph: {str(e)}"}
+
+
+
+
+
+
+
+    if graph_type == "pie_chart":
+
+        prompt= """
+**Role:** You are a data parsing expert specializing in DSPM (Data Security Posture Management) log analysis.
+
+**Task:** Extract specific data from provided DSPM log entries to construct a pie chart based on a user's request.
+
+**Input:**
+1.  `dspm_logs`: A list of DSPM log entries (JSON objects).
+2.  `user_prompt`: A natural language description of what to plot (e.g., "Show me failed logins by user" or "Graph data accesses per resource type").
+
+**Output Format:** Return **only** a valid JSON object in this exact structure:
+{
+    'labels': ['section1', 'section2', 'section3'],
+    'values': [10, 15, 7],
+    'title': 'title of the pie chart'
+}
+"""
+        for i, row in enumerate(rows, 1):
+            prompt += f"\n-------\n{row.content}\n"
+        prompt += f"\n**User Query:** {query}\n"
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0 
+            )
+        except Exception as e:
+            return {"Error": "Failed to call model: {e}"}
+
+
+        try:
+            pie_json = json.loads(response.choices[0].message.content)
+            required_keys = ['values', 'labels', 'title']
+            if not all(key in pie_json for key in required_keys):
+                raise ValueError("Invalid graph JSON structure")
+            
+            if 'title' not in pie_json:
+                pie_json['title'] = f"DSPM Analysis: {query[:50]}..."
+            image_buffer = create_pie_chart(pie_json)
+            # Return the image as a streaming response
+            return StreamingResponse(
+                content=image_buffer,
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f"attachment; filename=dspm_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                }
+            )
+        except json.JSONDecodeError:
+                return {"error": "Failed to parse graph specification from AI"}
+        except Exception as e:
+            return {"error": f"Failed to create graph: {str(e)}"}
+
+
+
+
+
+
+
+
